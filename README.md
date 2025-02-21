@@ -1,2 +1,4 @@
-# nypd_shooting_incident
-NYPD Shooting Incident data report
+# NYPD Shooting Incident data report
+
+## License
+This project is licensed under the MIT License.
