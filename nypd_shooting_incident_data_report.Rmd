@@ -1,0 +1,333 @@
+---
+title: "NYPD Shooting Incident Data Report"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE
+                      , warning = FALSE
+                      , message = FALSE
+                      , fig.width = 12
+                      , fig.height = 7)
+```
+
+## Table of Content
+
+1.  [Introduction](#chapter_1)
+2.  [Exploratory data analysis](#chapter_2)
+    -   2.1 [Probability of shooting incident by borough](#chapter_2_1)
+    -   2.2 [Circular heatmap of shooting incidents by hour
+        range](#chapter_2_2)
+3.  [Model](#chapter_3)
+    -   3.1 [Summary](#chapter_3_1)
+    -   3.2 [Performance](#chapter_3_2)
+4.  [Bias](#chapter_4)
+    -   4.1 [Possible bias](#chapter_4_1)
+    -   4.2 [Dataset bias](#chapter_4_1)
+5.  [Conclusion](#chapter_5)
+
+## 1. Introduction <a class="anchor" id="chapter_1"></a>
+
+The NYPD Shooting Incident Data (Historic) dataset includes records of
+shooting incidents in NYC from 2006 to 2023.\
+The dataset consists of **28,562** records with the following
+attributes:
+
+-   **INCIDENT_KEY:**\
+    A unique identifier for each shooting incident.
+
+-   **OCCUR_DATE:**\
+    Details about date the incident took place.
+
+-   **OCCUR_TIME:**\
+    Details about time the incident took place.
+
+-   **BORO:**\
+    The borough of New York City where the incident occurred.
+
+-   **LOC_OF_OCCUR_DESC:**\
+    Categorizes the type of location (e.g., inside, outside).
+
+-   **PRECINCT:**\
+    The police precinct responsible for the area where the incident
+    occurred.
+
+-   **JURISDICTION_CODE:**\
+    Indicates the jurisdiction under which the incident falls.
+
+-   **LOC_CLASSFCTN_DESC:**\
+    Categorizes the type of location (e.g., residential, commercial).
+
+-   **LOCATION_DESC:**\
+    Categorizes the type of location (e.g., supermarket, bank).
+
+-   **STATISTICAL_MURDER_FLAG:**\
+    A boolean flag indicating whether the incident resulted in murder.
+
+-   **Demographic Information:**\
+    Includes age group, sex, and race/ethnicity of both perpetrators and
+    victims.
+
+-   **Geographical Coordinates:**\
+    Includes the latitude and longitude of the incident.
+
+```{r}
+library("tidyverse")
+library("ggplot2")
+library("fmsb")
+library("httr")
+library("readr")
+```
+
+```{r}
+DATA_URL = "https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD"
+response <- GET(DATA_URL, config = config(ssl_verifypeer = FALSE))
+
+data <- read_csv(content(response, "text"), show_col_types = FALSE)
+```
+
+```{r}
+summary(data)
+```
+
+## 2. Exploratory data analysis <a class="anchor" id="chapter_2"></a>
+
+### 2.1 Probability of shooting incident by borough <a class="anchor" id="chapter_2_1"></a>
+
+```{r}
+data_boro = data %>%
+    group_by(BORO) %>%
+    summarise(INCIDENT_COUNT = n()) %>%
+    mutate(INCIDENT_PROBABILITY = round(INCIDENT_COUNT/sum(INCIDENT_COUNT)*100,2)) %>%
+    arrange(desc(INCIDENT_PROBABILITY))
+
+data_boro
+```
+
+```{r}
+ggplot(data_boro, aes(x = reorder(BORO, INCIDENT_PROBABILITY)
+                      , y = INCIDENT_PROBABILITY)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  geom_text(aes(label = sprintf("%.2f", INCIDENT_PROBABILITY)), 
+            hjust = -0.5, size = 3.5) +
+            labs(title = "Probability of Shooting Incident by Borough",
+                    x = "Borough",
+                    y = "Probability (%)",
+                    subtitle = paste("Total:"
+                             , sum(data_boro$INCIDENT_COUNT))
+            ) +
+            theme_minimal() +
+            ylim(0, max(data_boro$INCIDENT_PROBABILITY) * 1.1) +
+            coord_flip()
+```
+
+### 2.2 Circular heatmap of shooting incidents by hour range <a class="anchor" id="chapter_2_2"></a>
+
+```{r}
+data_hour <- data %>%
+  mutate(hour = cut(as.numeric(OCCUR_TIME)
+                     , breaks = seq(0, 86400, by = 3600)
+                     , labels = paste0(sprintf("%02d:00", seq(0, 23))
+                                         , " - "
+                                         , sprintf("%02d:00", seq(1, 24))
+                     )
+                     , right = FALSE
+                   )
+        ) %>%
+  group_by(hour) %>%
+  summarise(INCIDENT_COUNT = n(), .groups = 'drop')
+```
+
+```{r}
+circular_heatmap <- ggplot(data_hour, aes(x = hour, y = "", fill = INCIDENT_COUNT)) +
+    geom_tile(color = "white") +
+    scale_fill_gradient(low = "white", high = "blue") +
+    labs(title = "Circular Heatmap of Shooting Incidents by Hour Range",
+         x = NULL,
+         y = NULL) +
+    theme_minimal() +
+    theme(axis.text.y = element_blank(),
+          axis.ticks.y = element_blank(),
+          panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank()) +
+    coord_polar(theta = "x")
+```
+
+```{r}
+print(circular_heatmap)
+```
+
+## 3. Model <a class="anchor" id="chapter_3"></a>
+
+**Model type:** Logistic Regression\
+**Dependent variable:** STATISTICAL_MURDER_FLAG\
+**Explanatory variables:** BORO, PERP_AGE_GROUP, PERP_SEX, PERP_RACE,
+VIC_AGE_GROUP, VIC_SEX, VIC_RACE
+
+The primary objectives of the model are to:
+
+-   **Identify the impact of factors on probability of a murder
+    incident:**\
+    Examine how various demographic factors influence the probability of
+    a murder incident across different boroughs by examining the model
+    coefficients.
+
+-   **Assess factor significance:**\
+    Identify which factors do not play a significant role in explaining
+    the probability of a murder incident.
+
+### 3.1 Summary <a class="anchor" id="chapter_3_1"></a>
+
+```{r}
+set.seed(0)
+split_vector <- sample(c(TRUE, FALSE)
+                       , size = nrow(data)
+                       , replace = TRUE
+                       , prob = c(0.8, 0.2))
+data_train <- data[split_vector, ]
+data_test <- data[!split_vector, ]
+```
+
+```{r}
+model <- glm(STATISTICAL_MURDER_FLAG ~ BORO + PERP_AGE_GROUP + PERP_SEX + PERP_RACE + VIC_AGE_GROUP + VIC_SEX + VIC_RACE
+             , data = data_train
+             , family = binomial
+             )
+```
+
+```{r}
+summary(model)
+```
+
+### 3.2 Performance <a class="anchor" id="chapter_3_2"></a>
+
+#### Model 10-fold cross validation mean accuracy: 80.6%
+
+```{r}
+get_mean_accuracy <- function(data, k){
+    folds <- cut(seq(1, nrow(data)), breaks = k, labels = FALSE)
+    
+    accuracy_values <- c()
+    
+    for (i in 1:k) {
+        indices_test <- which(folds == i, arr.ind = TRUE)
+        data_test <- data[indices_test, ]
+        data_train <- data[-indices_test, ]
+        data_test$VIC_AGE_GROUP <- factor(data_test$VIC_AGE_GROUP
+                                          ,levels = levels(data_train$VIC_AGE_GROUP))
+        data_test$PERP_AGE_GROUP <- factor(data_test$PERP_AGE_GROUP
+                                          ,levels = levels(data_train$PERP_AGE_GROUP))
+        model <- glm(STATISTICAL_MURDER_FLAG ~ BORO + PERP_AGE_GROUP + PERP_SEX + PERP_RACE + VIC_AGE_GROUP + VIC_SEX + VIC_RACE
+                 , data = data_train
+                 , family = binomial
+                 )
+        predicted_probabilities <- predict(model
+                                           , newdata = data_test
+                                           , type = "response")
+        predicted_probabilities[is.na(predicted_probabilities)] <- 0.5
+        predicted_classes <- predicted_probabilities > 0.5
+        accuracy <- mean(predicted_classes == data_test$STATISTICAL_MURDER_FLAG)
+        accuracy_values[i] <- accuracy
+    }
+
+    return(mean(accuracy_values))
+}
+```
+
+```{r}
+get_mean_accuracy(data, 10)
+```
+
+## 4. Bias <a class="anchor" id="chapter_4"></a>
+
+### 4.1 Possible bias <a class="anchor" id="chapter_4_1"></a>
+
+1.  **Incomplete Reporting:**\
+    Underreporting or misclassification of incidents, which skews the
+    overall data.
+
+2.  **Model Specification:**\
+    Omitting relevant variables or including irrelevant ones can lead to
+    incorrect inferences about relationships within the data.
+
+### 4.2 Dataset bias <a class="anchor" id="chapter_4_2"></a>
+
+The dataset has around **43%** of unlabeled data regarding perpetrator
+race.\
+If this data is ommited, the dataset becomes highly imbalanced, with the
+BLACK race prevailing at **73%** of the remaing data and the next,
+second place, WHITE HISPANIC race, sitting at just **15%**.\
+This skewed data distribution makes it challenging, if not impossible,
+to conduct an unbiased analysis
+
+```{r}
+data_race <- data %>%
+    group_by(PERP_RACE) %>%
+    summarise(INCIDENT_COUNT = n(), .groups = 'drop') %>%
+    mutate(PERCENTAGE = round(INCIDENT_COUNT/sum(INCIDENT_COUNT)*100,2)) %>%
+    arrange(desc(INCIDENT_COUNT))
+```
+
+```{r}
+data_race
+```
+
+```{r}
+filter <- !(is.na(data_race$PERP_RACE) | data_race$PERP_RACE == '(null)' | data_race$PERP_RACE == 'UNKNOWN')
+data_race_filtered <- data_race[filter,] %>%
+    mutate(PERCENTAGE = round(INCIDENT_COUNT/sum(INCIDENT_COUNT)*100,2))
+```
+
+```{r}
+data_race_filtered
+```
+
+## 5. Conclusion <a class="anchor" id="chapter_5"></a>
+
+The analysis of the NYPD Shooting Incident Data (Historic) using
+logistic regression reveals insights into the factors influencing the
+likelihood of murder in shooting incidents across New York City. The
+model incorporates various demographic and geographic variables,
+including borough, age group, sex, and race of both perpetrators and
+victims. After measuring model performance using 10-fold
+cross-validation, the mean accuracy was found to be 80.6%.
+
+Insights:
+
+-   **Borough Influence:**\
+    The analysis indicates that shootings in different boroughs have
+    varying but statistically significant impacts on the likelihood of
+    murder. Only Staten Island was found to be statistically
+    insignificant as an explanatory variable, while the other boroughs
+    were statistically significant (p-values \< 0.05).
+
+-   **Perpetrator Age:**\
+    The age group of the perpetrator plays a crucial role, particularly
+    for those under 18 and those aged 18-24, both showing strong
+    positive associations with murder likelihood (p-values \< 0.001).
+    This suggests that younger individuals are more likely to be
+    involved in fatal shooting incidents.
+
+-   **Perpetrator Sex:**\
+    The model shows that male perpetrators are significantly associated
+    with higher odds of murder compared to female perpetrators. Both
+    variables are statistically significant (p-values \< 0.001).
+
+-   **Victim Demographics:**\
+    Contrary to the demographic trends of perpetrators, where age, sex,
+    and race are statistically significant, victim demographics indicate
+    that only age plays a significant role in the probability of being
+    murdered. Victims aged 25-64 show a strong association with murder
+    incidents (p-values \< 0.001).
+
+-   **Racial Dynamics:**\
+    There is a notable imbalance in the racial distribution of
+    perpetrators, with a high percentage of incidents involving Black
+    individuals. However, due to approximately 43% of the data being
+    unlabeled regarding perpetrator race, this could skew results and
+    complicate unbiased analysis. The predominance of Black individuals
+    in the remaining labeled data (73%) raises concerns about
+    representation and bias in crime statistics.
