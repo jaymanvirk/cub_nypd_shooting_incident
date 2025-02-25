@@ -14,7 +14,7 @@ knitr::opts_chunk$set(echo = TRUE
                       , fig.height = 7)
 ```
 
-## Table of Content
+## Table of Contents
 
 1.  [Introduction](#chapter_1)
 2.  [Exploratory data analysis](#chapter_2)
